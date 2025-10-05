@@ -299,3 +299,73 @@ Write-Host "`n✅ Taskbar fully restored and auto-hider removed." -ForegroundCol
 Reboot once after installing the new script.
 When you log in, Explorer should load, the script will detect it, and your **taskbar will vanish permanently**.
 
+Perfect 👍 Here’s the **RESTORE SCRIPT** for that **Startup shortcut-based Taskbar Auto-Hider** (the one that saves `HideTaskbar_24H2.ps1` under AppData and adds a `.lnk` file to Startup).
+
+---
+
+### 🟩 **Restore Script — Remove Startup Taskbar Hider (AppData Version)**
+
+Copy and paste this into **PowerShell (Run as Administrator)**:
+
+```powershell
+Write-Host "=== Restoring Taskbar & Removing AppData Auto-Hider ===" -ForegroundColor Cyan
+
+$scriptPath   = "$env:AppData\HideTaskbar_24H2.ps1"
+$shortcutPath = "$env:AppData\Microsoft\Windows\Start Menu\Programs\Startup\HideTaskbar_24H2.lnk"
+
+# 1️⃣ Stop running background hider
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+Where-Object { $_.CommandLine -match 'HideTaskbar_24H2.ps1' } |
+ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
+Write-Host "🛑 Stopped running hider processes." -ForegroundColor Yellow
+
+# 2️⃣ Remove the PowerShell script
+if (Test-Path $scriptPath) {
+    Remove-Item $scriptPath -Force
+    Write-Host "🧹 Deleted script: $scriptPath" -ForegroundColor Yellow
+}
+
+# 3️⃣ Remove the startup shortcut
+if (Test-Path $shortcutPath) {
+    Remove-Item $shortcutPath -Force
+    Write-Host "🧹 Deleted startup shortcut: $shortcutPath" -ForegroundColor Yellow
+}
+
+# 4️⃣ Restore taskbar visibility
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinUtil {
+    [DllImport("user32.dll", CharSet=CharSet.Auto)]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+
+foreach ($cls in 'Shell_TrayWnd','Shell_SecondaryTrayWnd','TaskbarWindowXamlHost') {
+    $h = [WinUtil]::FindWindow($cls, $null)
+    if ($h -ne [IntPtr]::Zero) { [WinUtil]::ShowWindow($h, 5) | Out-Null }  # 5 = SW_SHOW
+}
+
+# 5️⃣ Restart Explorer for good measure
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Start-Process explorer.exe
+
+Write-Host "`n✅ Taskbar fully restored, and all auto-hider remnants removed." -ForegroundColor Green
+```
+
+---
+
+### 🧠 What This Does
+
+✅ Stops any running hidden taskbar PowerShell
+✅ Deletes the script from `%AppData%`
+✅ Deletes the `.lnk` shortcut from the user’s `Startup` folder
+✅ Restores and re-shows the taskbar immediately
+✅ Restarts Explorer to finalize
+
+---
+
+Would you like me to make a **universal toggle script** that automatically detects whether it’s installed (Startup or Task Scheduler) and toggles hide/restore accordingly with one click?
