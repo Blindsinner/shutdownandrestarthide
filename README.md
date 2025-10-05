@@ -247,10 +247,51 @@ Write-Host "⏱️  Started now.  Reboot or sign out/in to confirm it stays hidd
 Run this one-liner as Admin:
 
 ```powershell
-Unregister-ScheduledTask -TaskName "TaskbarAutoHider_Persistent" -Confirm:$false
-Remove-Item "C:\HideTaskbar_24H2.ps1" -Force
-Stop-Process -Name powershell -ErrorAction SilentlyContinue
+Write-Host "=== Restoring Taskbar and Removing Auto-Hider ===" -ForegroundColor Cyan
+
+$taskName = "TaskbarAutoHider_Persistent"
+$scriptPath = "C:\HideTaskbar_24H2.ps1"
+
+# 1️⃣ Stop background hider process (if running)
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+Where-Object { $_.CommandLine -match 'HideTaskbar_24H2.ps1' } |
+ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
+
+# 2️⃣ Remove scheduled task
+if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    Write-Host "Removed scheduled task '$taskName'." -ForegroundColor Yellow
+}
+
+# 3️⃣ Delete the auto-hider script
+if (Test-Path $scriptPath) {
+    Remove-Item $scriptPath -Force
+    Write-Host "Deleted script file: $scriptPath" -ForegroundColor Yellow
+}
+
+# 4️⃣ Re-show taskbar windows
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinUtil {
+    [DllImport("user32.dll", CharSet=CharSet.Auto)]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+foreach ($cls in 'Shell_TrayWnd','Shell_SecondaryTrayWnd','TaskbarWindowXamlHost') {
+    $h = [WinUtil]::FindWindow($cls, $null)
+    if ($h -ne [IntPtr]::Zero) { [WinUtil]::ShowWindow($h, 5) | Out-Null }  # 5 = SW_SHOW
+}
+
+# 5️⃣ Restart Explorer to finalize
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Process explorer.exe
+
+Write-Host "`n✅ Taskbar fully restored and auto-hider removed." -ForegroundColor Green
+
 ```
 
 ---
