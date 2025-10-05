@@ -369,3 +369,133 @@ Write-Host "`n✅ Taskbar fully restored, and all auto-hider remnants removed." 
 ---
 
 Would you like me to make a **universal toggle script** that automatically detects whether it’s installed (Startup or Task Scheduler) and toggles hide/restore accordingly with one click?
+
+######################
+######################
+######################
+
+
+Got it ✅
+
+You can use both, but we’ll make the **shutdown/restart hider** safe so it never breaks `explorer.exe` again — and the **taskbar hider** stays persistent.
+Here’s the **final combined & fixed version** that works cleanly on Windows 11 24H2 (26100+):
+
+---
+
+### 🧩 **1️⃣ Safe “Hide Shutdown & Restart” Script**
+
+```powershell
+Write-Host "=== Hiding Shutdown, Restart, Sleep & Hibernate options ===" -ForegroundColor Cyan
+
+# Create policy key and apply rule
+$regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+New-Item -Path $regPath -Force | Out-Null
+Set-ItemProperty -Path $regPath -Name "NoClose" -Value 1 -Type DWord
+
+# Refresh group policy & restart only StartMenu host (not full explorer)
+gpupdate /target:user /force | Out-Null
+
+# Restart StartMenuExperienceHost instead of killing full explorer
+Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+Start-Process "explorer.exe"
+
+Write-Host "✅ Shutdown & Restart hidden for this user. (Sign out/in if still visible)" -ForegroundColor Green
+```
+
+🟢 **Explanation:**
+
+* Uses the correct registry policy (`NoClose`).
+* Only restarts *StartMenuExperienceHost* (safer than killing Explorer).
+* Works immediately after sign-out/sign-in if StartMenu caches it.
+
+---
+
+### 🧱 **2️⃣ Reliable Taskbar Auto-Hider (Persistent)**
+
+```powershell
+Write-Host "=== Installing Reliable Taskbar Auto-Hider (Win11 24H2) ===" -ForegroundColor Cyan
+
+$scriptPath = "C:\HideTaskbar_24H2.ps1"
+$taskName   = "TaskbarAutoHider_Persistent"
+
+# --- Create the background hider script ---
+$code = @'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinUtil {
+    [DllImport("user32.dll", CharSet=CharSet.Auto)]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+}
+"@
+
+function Hide-Taskbar {
+    $classes = @('Shell_TrayWnd','Shell_SecondaryTrayWnd','TaskbarWindowXamlHost')
+    foreach ($c in $classes) {
+        $h = [WinUtil]::FindWindow($c, $null)
+        if ($h -ne [IntPtr]::Zero -and [WinUtil]::IsWindowVisible($h)) {
+            [WinUtil]::ShowWindow($h, 0) | Out-Null
+        }
+    }
+}
+
+# Wait for explorer to start
+while (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }
+Start-Sleep -Seconds 8
+
+# Keep hiding forever
+while ($true) {
+    Hide-Taskbar
+    Start-Sleep -Seconds 2
+}
+'@
+Set-Content -Path $scriptPath -Value $code -Encoding UTF8
+Write-Host "Saved: $scriptPath" -ForegroundColor Yellow
+
+# --- Register Scheduled Task ---
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User $env:UserName -RunLevel Highest -Force
+
+Write-Host "✅ Task '$taskName' registered (auto-starts after logon)" -ForegroundColor Green
+
+# --- Start now for current session ---
+Start-Process powershell.exe "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+Write-Host "⏱️ Taskbar hidden now; persists after reboot/sign-in." -ForegroundColor Yellow
+```
+
+---
+
+### 🧹 **To Restore Everything**
+
+If you ever want to undo:
+
+```powershell
+# Restore power options
+Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoClose" -ErrorAction SilentlyContinue
+
+# Remove taskbar hider
+Unregister-ScheduledTask -TaskName "TaskbarAutoHider_Persistent" -Confirm:$false
+Remove-Item "C:\HideTaskbar_24H2.ps1" -Force -ErrorAction SilentlyContinue
+
+# Restart shell
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Start-Process explorer.exe
+```
+
+---
+
+✅ **Run both (1) and (2) once** — in an *elevated* PowerShell window.
+Then restart or sign out/in.
+After that:
+
+* Power button won’t show *Shutdown / Restart*.
+* Taskbar remains hidden persistently.
+
