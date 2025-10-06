@@ -499,3 +499,162 @@ After that:
 * Power button won’t show *Shutdown / Restart*.
 * Taskbar remains hidden persistently.
 
+###############################################################
+
+
+Got it 🙂 — you want **one combined script** that does *everything*:
+
+* hides **Shutdown / Restart / Sleep / Hibernate**
+* hides **Lock / Sign out / Switch User**
+* hides **Quick Settings & Notification Center**
+* disables **Win+A / Win+N flyouts**
+* **auto-hides the Taskbar** with persistence
+
+…and also can **restore later**.
+
+---
+
+### ⚠️ Before you run
+
+This is **very aggressive**. It touches system policies, NTFS permissions, and schedules a background PowerShell script.
+📌 **Create a System Restore Point first**
+📌 **Run PowerShell as Administrator**
+
+---
+
+### 📝 **Full Desktop Lockdown Script**
+
+```powershell
+Write-Host "=== Installing FULL Desktop Lockdown (Windows 11 24H2) ===" -ForegroundColor Cyan
+
+# --- 1️⃣ Hide power menu options (Shutdown / Restart / Sleep / Hibernate / Lock / Sign out / Switch User)
+$exp = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+New-Item -Path $exp -Force | Out-Null
+$values = @{
+    NoClose                  = 1   # hides Shut down / Restart
+    NoLogoff                 = 1   # hides Sign out
+    HideFastUserSwitching    = 1   # disables Switch user
+}
+foreach ($n in $values.Keys) {
+    Set-ItemProperty -Path $exp -Name $n -Value $values[$n] -Type DWord
+}
+
+# Disable Lock from Ctrl+Alt+Del and Start Power Menu
+$sysUser   = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"
+$sysMachine= "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+New-Item -Path $sysUser -Force | Out-Null
+New-Item -Path $sysMachine -Force | Out-Null
+Set-ItemProperty -Path $sysUser -Name "DisableLockWorkstation" -Type DWord -Value 1
+Set-ItemProperty -Path $sysMachine -Name "DisableLockWorkstation" -Type DWord -Value 1
+
+# --- 2️⃣ Hide Quick Settings & Notification Center
+$pols = @(
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",
+    "HKCU:\Software\Policies\Microsoft\Windows\Explorer"
+)
+foreach ($p in $pols) {
+    New-Item -Path $p -Force | Out-Null
+    Set-ItemProperty -Path $p -Name "DisableNotificationCenter" -Type DWord -Value 1
+    Set-ItemProperty -Path $p -Name "DisableControlCenter" -Type DWord -Value 1
+}
+
+# --- 3️⃣ Block Win+A / Win+N flyouts (NTFS deny read on StartMenuExperienceHost)
+$hostPath = "C:\Windows\SystemApps\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy"
+icacls $hostPath /deny "Everyone:(RX)" | Out-Null
+
+# --- 4️⃣ Hide Taskbar permanently (scheduled background hider)
+$taskName = "TaskbarAutoHider_Persistent"
+$scriptPath = "C:\HideTaskbar_24H2.ps1"
+
+$taskbarCode = @'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinUtil {
+    [DllImport("user32.dll", CharSet=CharSet.Auto)]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+}
+"@
+function Hide-Taskbar {
+    foreach ($cls in 'Shell_TrayWnd','Shell_SecondaryTrayWnd','TaskbarWindowXamlHost') {
+        $h = [WinUtil]::FindWindow($cls,$null)
+        if ($h -ne [IntPtr]::Zero -and [WinUtil]::IsWindowVisible($h)) {
+            [WinUtil]::ShowWindow($h,0) | Out-Null
+        }
+    }
+}
+while (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Sleep -Seconds 2 }
+Start-Sleep -Seconds 8
+while ($true) { Hide-Taskbar; Start-Sleep -Seconds 2 }
+'@
+Set-Content -Path $scriptPath -Value $taskbarCode -Encoding UTF8
+
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User $env:USERNAME -RunLevel Highest -Force
+
+# --- 5️⃣ Apply policies immediately
+gpupdate /force | Out-Null
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+Stop-Process -Name ShellExperienceHost -Force -ErrorAction SilentlyContinue
+Start-Process explorer.exe
+
+Write-Host "`n✅ FULL lockdown installed — taskbar, power menu, lock, and quick settings removed." -ForegroundColor Green
+Write-Host "🔄 Reboot or sign-out once for complete persistence." -ForegroundColor Yellow
+```
+
+---
+
+### 🧹 **Restore Script**
+
+```powershell
+Write-Host "=== Restoring Desktop from Lockdown ===" -ForegroundColor Cyan
+
+# 1️⃣ Undo policies
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoClose" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoLogoff" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "HideFastUserSwitching" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System" -Name "DisableLockWorkstation" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "DisableLockWorkstation" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" -Name "DisableNotificationCenter" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" -Name "DisableControlCenter" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableNotificationCenter" -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Name "DisableControlCenter" -ErrorAction SilentlyContinue
+
+# 2️⃣ Restore NTFS permissions for StartMenuExperienceHost
+$hostPath = "C:\Windows\SystemApps\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy"
+icacls $hostPath /remove:d "Everyone" | Out-Null
+
+# 3️⃣ Remove the taskbar auto-hider scheduled task & script
+if (Get-ScheduledTask -TaskName "TaskbarAutoHider_Persistent" -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName "TaskbarAutoHider_Persistent" -Confirm:$false
+}
+if (Test-Path "C:\HideTaskbar_24H2.ps1") {
+    Remove-Item "C:\HideTaskbar_24H2.ps1" -Force
+}
+
+# 4️⃣ Restart Explorer & Hosts
+gpupdate /force | Out-Null
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Start-Process explorer.exe
+
+Write-Host "`n✅ Desktop restored to normal." -ForegroundColor Green
+```
+
+---
+
+✅ **Result after running lockdown script**:
+
+* Start Power menu only shows your name with no Shutdown/Restart/Lock/Sign Out.
+* Quick settings tray + Notification Center disabled.
+* Taskbar hidden permanently.
+* Win+L disabled.
+
+Would you like me to integrate an **automatic restore shortcut** (one-click .ps1 file) as well? (Handy in case something goes wrong.)
